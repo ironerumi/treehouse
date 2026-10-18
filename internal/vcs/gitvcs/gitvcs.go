@@ -90,6 +90,22 @@ func CommonGitDir(dir string) (string, error) {
 	return p, nil
 }
 
+func commonGitDirEnv(dir string, env []string) (string, error) {
+	out, err := gitOutputEnv(dir, env, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		// Older git without --path-format falls back to a possibly-relative path.
+		out, err = gitOutputEnv(dir, env, nil, "rev-parse", "--git-common-dir")
+		if err != nil {
+			return "", err
+		}
+	}
+	p := filepath.Clean(filepath.FromSlash(strings.TrimSpace(string(out))))
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(dir, p)
+	}
+	return p, nil
+}
+
 func repoRootFromCommonGitDir(dir string) (string, bool) {
 	cleaned := filepath.Clean(filepath.FromSlash(dir))
 	if filepath.Base(cleaned) != ".git" {
@@ -566,18 +582,18 @@ func defaultWorktreeInclude(repoRoot, worktreePath string, gitEnv []string, ref 
 		manifest = appendIncludeLayer(manifest, layer)
 	}
 
-	common, err := gitOutputEnv(repoRoot, gitEnv, nil,
-		"rev-parse", "--path-format=absolute", "--git-common-dir")
+	commonDir, err := commonGitDirEnv(repoRoot, gitEnv)
 	if err != nil {
 		return nil, fmt.Errorf("resolve include common Git directory: %w", err)
 	}
-	commonDir := filepath.FromSlash(strings.TrimSuffix(string(common), "\n"))
-	if !filepath.IsAbs(commonDir) {
-		commonDir = filepath.Join(repoRoot, commonDir)
-	}
 	filename := filepath.Join(commonDir, "info", "worktreeinclude")
-	layer, err := os.ReadFile(filename)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	var layer []byte
+	if _, err := os.Lstat(filename); err == nil {
+		layer, err = os.ReadFile(filename)
+		if err != nil {
+			return nil, fmt.Errorf("read clone include %q: %w", filename, err)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("read clone include %q: %w", filename, err)
 	}
 	manifest = appendIncludeLayer(manifest, layer)
