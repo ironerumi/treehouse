@@ -839,9 +839,9 @@ func TestGetIncludeLayersAndOverride(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
 	gitCmd(t, repo, "config", "core.autocrlf", "false")
 	for name, contents := range map[string]string{
-		".gitignore": "*.seed\n", ".worktreeinclude": "repository.seed\n",
-		"repository.seed": "repository\n", "user.seed": "user\n", "clone.seed": "clone\n", "explicit.seed": "explicit\n",
-		"personal.include": "user.seed\n",
+		".gitignore": "*.seed\n", ".worktreeinclude": "repository.seed\nuser.seed\n",
+		"repository.seed": "repository\n", "user.seed": "user\n", "clone.seed": "clone\n", "explicit.seed": "explicit\n", "veto.seed": "veto\n",
+		"personal.include": "user.seed\nveto.seed\n",
 	} {
 		if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o600); err != nil {
 			t.Fatal(err)
@@ -853,7 +853,8 @@ func TestGetIncludeLayersAndOverride(t *testing.T) {
 	gitCmd(t, repo, "config", "worktree.includeFile", "personal.include")
 	common := gitCmd(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	sidecar := filepath.Join(common, "info", "worktreeinclude")
-	if err := os.WriteFile(sidecar, []byte("clone.seed\n"), 0o600); err != nil {
+	// Clone negations remove user selections; the repository re-adds user.seed.
+	if err := os.WriteFile(sidecar, []byte("!user.seed\n!veto.seed\nclone.seed\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// Invoke from a nested directory in a linked checkout, but read source policy.
@@ -877,7 +878,7 @@ func TestGetIncludeLayersAndOverride(t *testing.T) {
 		for _, name := range want {
 			selected[name] = true
 		}
-		for _, name := range []string{"repository.seed", "user.seed", "clone.seed", "explicit.seed"} {
+		for _, name := range []string{"repository.seed", "user.seed", "clone.seed", "explicit.seed", "veto.seed"} {
 			data, err := os.ReadFile(filepath.Join(lease.Path, name))
 			if selected[name] {
 				if err != nil || string(data) != strings.TrimSuffix(name, ".seed")+"\n" {
