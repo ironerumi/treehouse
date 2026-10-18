@@ -115,7 +115,7 @@ type AcquireOptions struct {
 	// Empty keeps the built-in {pool}/{slot}/{repo} layout. It is read only when
 	// a slot is created, so it never moves a worktree already in the pool.
 	WorktreePath string
-	// IncludeManifest replaces the committed manifest; nil keeps the default,
+	// IncludeManifest replaces all include layers; nil keeps the layered default,
 	// while a non-nil empty slice explicitly disables seeding.
 	IncludeManifest []byte
 	// APFSSharing opts in to tracked-file copy-on-write sharing for fresh Git

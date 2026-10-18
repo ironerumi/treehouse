@@ -338,8 +338,8 @@ func PruneWorktrees(repoRoot string) error {
 	return err
 }
 
-// SeedWorktree copies ignored files selected by manifest, or by the committed
-// .worktreeinclude at the destination HEAD when manifest is nil.
+// SeedWorktree copies ignored files selected by manifest, or by the layered
+// user, clone, and destination-committed include rules when manifest is nil.
 func SeedWorktree(repoRoot, worktreePath string, manifest []byte) error {
 	_, err := SeedWorktreeWithInventory(repoRoot, worktreePath, manifest)
 	return err
@@ -524,10 +524,10 @@ func worktreeCaseInsensitive(worktreePath string) (bool, error) {
 const worktreeIncludeName = ".worktreeinclude"
 
 func selectedSeedPathsEnv(repoRoot, worktreePath string, gitEnv []string, manifestRef string, manifest []byte) ([]byte, error) {
-	// An explicitly empty override must not fall back to repository selections.
+	// A non-nil override bypasses discovery and errors in every default layer.
 	if manifest == nil {
 		var err error
-		manifest, err = committedWorktreeInclude(repoRoot, worktreePath, gitEnv, manifestRef)
+		manifest, err = defaultWorktreeInclude(repoRoot, worktreePath, gitEnv, manifestRef)
 		if err != nil {
 			return nil, err
 		}
@@ -536,6 +536,69 @@ func selectedSeedPathsEnv(repoRoot, worktreePath string, gitEnv []string, manife
 		return nil, nil
 	}
 	return selectedSeedPathsWithManifestEnv(repoRoot, manifest, gitEnv)
+}
+
+// defaultWorktreeInclude snapshots all layers in Git precedence order: user,
+// clone, then repository. Metadata and configuration belong to the source;
+// only the committed manifest belongs to the destination revision.
+func defaultWorktreeInclude(repoRoot, worktreePath string, gitEnv []string, ref string) ([]byte, error) {
+	var manifest []byte
+	configured, err := gitOutputEnv(repoRoot, gitEnv, nil,
+		"config", "--null", "--path", "--get", "worktree.includeFile")
+	if err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			return nil, fmt.Errorf("resolve worktree.includeFile: %w", err)
+		}
+	} else {
+		filename := string(bytes.TrimSuffix(configured, []byte{0}))
+		if filename == "" {
+			return nil, fmt.Errorf("worktree.includeFile is empty: configure a manifest path or unset the key")
+		}
+		filename = filepath.FromSlash(filename)
+		if !filepath.IsAbs(filename) {
+			filename = filepath.Join(repoRoot, filename)
+		}
+		layer, err := os.ReadFile(filename)
+		if err != nil {
+			return nil, fmt.Errorf("read worktree.includeFile %q: %w", filename, err)
+		}
+		manifest = appendIncludeLayer(manifest, layer)
+	}
+
+	common, err := gitOutputEnv(repoRoot, gitEnv, nil,
+		"rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return nil, fmt.Errorf("resolve include common Git directory: %w", err)
+	}
+	commonDir := filepath.FromSlash(strings.TrimSuffix(string(common), "\n"))
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(repoRoot, commonDir)
+	}
+	filename := filepath.Join(commonDir, "info", "worktreeinclude")
+	layer, err := os.ReadFile(filename)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("read clone include %q: %w", filename, err)
+	}
+	manifest = appendIncludeLayer(manifest, layer)
+
+	layer, err = committedWorktreeInclude(repoRoot, worktreePath, gitEnv, ref)
+	if err != nil {
+		return nil, err
+	}
+	return appendIncludeLayer(manifest, layer), nil
+}
+
+// Git strips a BOM at the beginning of each exclude file. Preserve that and
+// line boundaries when presenting multiple files as a single pattern stream;
+// leave all other bytes (including spaces, escapes, and CRLF) to Git.
+func appendIncludeLayer(manifest, layer []byte) []byte {
+	layer = bytes.TrimPrefix(layer, []byte{0xef, 0xbb, 0xbf})
+	manifest = append(manifest, layer...)
+	if len(layer) > 0 && layer[len(layer)-1] != '\n' {
+		manifest = append(manifest, '\n')
+	}
+	return manifest
 }
 
 // committedWorktreeInclude returns the blob of .worktreeinclude at the commit

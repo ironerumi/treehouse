@@ -61,8 +61,9 @@ type Backend interface {
 	AddWorktree(repoRoot, path, branch string) error
 	// SeedWorktree copies backend-specific ignored files into a new or recycled
 	// worktree and returns their paths so cleanup need not trust mutable worktree
-	// metadata. A nil manifest uses committed .worktreeinclude at the destination
-	// HEAD; a non-nil manifest replaces it, with an empty slice selecting nothing.
+	// metadata. A nil manifest layers user, clone, and destination-committed
+	// include rules; a non-nil manifest replaces all layers, with an empty slice
+	// selecting nothing.
 	SeedWorktree(repoRoot, worktreePath string, manifest []byte) ([]string, error)
 	// PruneWorktrees clears bookkeeping for worktrees whose directories no
 	// longer exist. It never touches live worktrees or their data.
