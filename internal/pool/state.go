@@ -48,7 +48,7 @@ type WorktreeEntry struct {
 	BaseBranch string `json:"base_branch,omitempty"`
 	// SeededPaths is the trusted inventory of ignored files copied for this
 	// acquisition. It must live outside the mutable worktree so reset cannot be
-	// bypassed by changing the source include rules there.
+	// bypassed by changing or committing .worktreeinclude there.
 	SeededPaths []string `json:"seeded_paths,omitempty"`
 	// SeedInventoryKnown distinguishes a verified empty inventory from an
 	// incomplete or recovered acquisition that must fail closed.

@@ -551,6 +551,18 @@ func SeedWorktree(repoRoot, worktreePath string, manifest []byte) ([]string, err
 	return backendFor(repoRoot).SeedWorktree(repoRoot, worktreePath, manifest)
 }
 
+// SeedWorktreeWithCommonGitDir reuses common-directory metadata already read by
+// acquisition. Backends that do not need it keep their ordinary seeding path.
+func SeedWorktreeWithCommonGitDir(repoRoot, worktreePath, sourceCommonDir string, manifest []byte) ([]string, error) {
+	backend := backendFor(repoRoot)
+	if seeded, ok := backend.(interface {
+		SeedWorktreeWithCommonGitDir(string, string, string, []byte) ([]string, error)
+	}); ok {
+		return seeded.SeedWorktreeWithCommonGitDir(repoRoot, worktreePath, sourceCommonDir, manifest)
+	}
+	return backend.SeedWorktree(repoRoot, worktreePath, manifest)
+}
+
 func JJSeedAuthenticationIdentity(worktreePath string) (string, error) {
 	return gitvcs.JJSeedAuthenticationIdentity(worktreePath)
 }

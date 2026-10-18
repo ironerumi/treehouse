@@ -1240,7 +1240,7 @@ func TestAcquire_QuarantinesReusedWorktreeAfterPartialSeedFailure(t *testing.T) 
 		t.Fatal(err)
 	}
 	oldSeedWorktree := seedWorktree
-	seedWorktree = func(_ string, path string, _ []byte) ([]string, error) {
+	seedWorktree = func(_ string, path, _ string, _ []byte) ([]string, error) {
 		if err := os.WriteFile(filepath.Join(path, "partial.env"), []byte("partial\n"), 0o644); err != nil {
 			return nil, err
 		}
@@ -1282,7 +1282,7 @@ func TestAcquire_RemovesPartialSeedsWhenQuarantineWriteFails(t *testing.T) {
 	}
 
 	oldSeedWorktree := seedWorktree
-	seedWorktree = func(_ string, path string, _ []byte) ([]string, error) {
+	seedWorktree = func(_ string, path, _ string, _ []byte) ([]string, error) {
 		if err := os.WriteFile(filepath.Join(path, "partial.env"), []byte("partial\n"), 0o644); err != nil {
 			return nil, err
 		}
@@ -1314,7 +1314,7 @@ func TestAcquire_QuarantinesNewWorktreeWhenSeedCleanupFails(t *testing.T) {
 	repoDir, poolDir := setupLocalRepo(t)
 	oldSeedWorktree := seedWorktree
 	oldRemoveWorktree := removeWorktree
-	seedWorktree = func(string, string, []byte) ([]string, error) { return nil, errors.New("seeding failed") }
+	seedWorktree = func(string, string, string, []byte) ([]string, error) { return nil, errors.New("seeding failed") }
 	removeWorktree = func(string, string) error { return errors.New("cleanup failed") }
 	t.Cleanup(func() {
 		seedWorktree = oldSeedWorktree
@@ -1368,11 +1368,11 @@ func TestAcquire_SeedingDoesNotFollowWorktreeSymlinks(t *testing.T) {
 	}
 	seeded := filepath.Join(wtPath, ".env")
 	oldSeedWorktree := seedWorktree
-	seedWorktree = func(repoRoot, path string, manifest []byte) ([]string, error) {
+	seedWorktree = func(repoRoot, path, commonDir string, manifest []byte) ([]string, error) {
 		if err := os.Symlink(sentinel, filepath.Join(path, ".env")); err != nil {
 			return nil, err
 		}
-		return oldSeedWorktree(repoRoot, path, manifest)
+		return oldSeedWorktree(repoRoot, path, commonDir, manifest)
 	}
 	t.Cleanup(func() { seedWorktree = oldSeedWorktree })
 

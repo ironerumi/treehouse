@@ -26,6 +26,73 @@ func TestRepoRootFromCommonGitDirHandlesForwardSlashPath(t *testing.T) {
 	}
 }
 
+func TestCommonGitDirEnvFallsBackForOlderGitWithSourceEnvironment(t *testing.T) {
+	repo := t.TempDir()
+	mustGit(t, "", "init", repo)
+	logPath, _ := installGitWrapper(t, true)
+	metadata := filepath.Join(repo, ".git")
+	t.Setenv("PATH", filepath.Dir(logPath)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	env := append(os.Environ(), "GIT_DIR="+metadata)
+	got, err := commonGitDirEnv(t.TempDir(), env)
+	if err != nil {
+		t.Fatalf("commonGitDirEnv failed through older-Git fallback: %v", err)
+	}
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInfo, err := os.Stat(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("common Git directory = %q, want source GIT_DIR %q", got, metadata)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(calls) != 2 || strings.Contains(calls[1], "--path-format=absolute") {
+		t.Fatalf("expected one rejected path-format call followed by the source-environment fallback, got %q", data)
+	}
+}
+
+func TestSeedLayersReusesKnownCommonDirectory(t *testing.T) {
+	isolateIncludeConfig(t)
+	repo, worktree := setupSeedWorktree(t, "selected.env\n")
+	writeTestFile(t, repo, "selected.env", "selected\n")
+	common, err := CommonGitDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath, _ := installGitWrapper(t, true)
+	t.Setenv("PATH", filepath.Dir(logPath)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	got, err := selectedSeedPathsEnvWithCommonDir(repo, worktree, nil, "", nil, common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "selected.env\x00" {
+		t.Fatalf("selected paths = %q, want selected.env", got)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "rev-parse") {
+		t.Fatalf("known source common directory still triggered Git discovery: %s", data)
+	}
+	configCalls := 0
+	for _, call := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.HasPrefix(call, "config ") {
+			configCalls++
+		}
+	}
+	if configCalls != 1 {
+		t.Fatalf("layer resolution used %d Git config lookups, want 1: %s", configCalls, data)
+	}
+}
+
 func TestGetDefaultBranchFromDetachedLinkedWorktreeUsesMainRepoHead(t *testing.T) {
 	base := t.TempDir()
 	repoDir := filepath.Join(base, "repo")
@@ -1525,6 +1592,44 @@ func TestSeedLayersMatchOrderedGitFiles(t *testing.T) {
 	}
 }
 
+func TestSeedLayersInvalidDestinationRevisionRemainsAnError(t *testing.T) {
+	isolateIncludeConfig(t)
+	repo, worktree := setupSeedWorktree(t, "")
+	if _, err := selectedSeedPathsEnv(repo, worktree, nil, "refs/heads/missing", nil); err == nil {
+		t.Fatal("missing destination revision must remain a seeding error")
+	}
+}
+
+func TestSeedLayersDanglingCloneSidecarIsAnError(t *testing.T) {
+	isolateIncludeConfig(t)
+	repo, worktree := setupSeedWorktree(t, "")
+	common, err := CommonGitDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecar := filepath.Join(common, "info", "worktreeinclude")
+	if err := os.Symlink(filepath.Join(common, "missing-worktreeinclude"), sidecar); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := selectedSeedPathsEnv(repo, worktree, nil, "", nil); err == nil || !strings.Contains(err.Error(), "read clone include") {
+		t.Fatalf("dangling clone sidecar error = %v, want persistent-layer read error", err)
+	}
+	if err := os.Remove(sidecar); err != nil {
+		t.Fatal(err)
+	}
+	got, err := selectedSeedPathsEnv(repo, worktree, nil, "", nil)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("absent clone sidecar = %q, %v; want no rules", got, err)
+	}
+	if err := os.Symlink(filepath.Join(common, "missing-worktreeinclude"), sidecar); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	got, err = selectedSeedPathsEnv(repo, worktree, nil, "", []byte{})
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty explicit override = %q, %v; want sidecar bypass", got, err)
+	}
+}
+
 func TestSeedLayersConfigLookup(t *testing.T) {
 	for _, mode := range []string{"tilde", "relative spaces", "include", "includeIf", "scope", "command config", "empty file", "missing", "empty value", "directory", "malformed"} {
 		t.Run(mode, func(t *testing.T) {
@@ -1747,6 +1852,63 @@ func assertGitCheckoutFile(t *testing.T, root, name, want string) {
 		t.Fatalf("%s = %q, want %q", name, data, want)
 	}
 }
+func installGitWrapper(t *testing.T, rejectPathFormat bool) (string, string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	source := filepath.Join(root, "main.go")
+	code := `package main
+import (
+  "fmt"
+  "os"
+  "os/exec"
+  "strings"
+)
+func main() {
+  args := os.Args[1:]
+  if log := os.Getenv("TREEHOUSE_GIT_LOG"); log != "" {
+    f, err := os.OpenFile(log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+    if err != nil { panic(err) }
+    _, _ = fmt.Fprintln(f, strings.Join(args, " "))
+    _ = f.Close()
+  }
+  if os.Getenv("TREEHOUSE_REJECT_PATH_FORMAT") == "1" {
+    for _, arg := range args {
+      if arg == "--path-format=absolute" { os.Exit(129) }
+    }
+  }
+  cmd := exec.Command(os.Getenv("TREEHOUSE_REAL_GIT"), args...)
+  cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+  if err := cmd.Run(); err != nil {
+    if exit, ok := err.(*exec.ExitError); ok { os.Exit(exit.ExitCode()) }
+    fmt.Fprintln(os.Stderr, err)
+    os.Exit(1)
+  }
+}`
+	if err := os.WriteFile(source, []byte(code), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	name := "git"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	wrapper := filepath.Join(root, name)
+	cmd := exec.Command("go", "build", "-o", wrapper, source)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build git wrapper: %v\n%s", err, output)
+	}
+	logPath := filepath.Join(root, "git.log")
+	t.Setenv("TREEHOUSE_REAL_GIT", realGit)
+	t.Setenv("TREEHOUSE_GIT_LOG", logPath)
+	if rejectPathFormat {
+		t.Setenv("TREEHOUSE_REJECT_PATH_FORMAT", "1")
+	}
+	return logPath, wrapper
+}
+
 func mustGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
