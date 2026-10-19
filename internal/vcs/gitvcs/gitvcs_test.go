@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -90,6 +91,46 @@ func TestSeedLayersReusesKnownCommonDirectory(t *testing.T) {
 	}
 	if configCalls != 1 {
 		t.Fatalf("layer resolution used %d Git config lookups, want 1: %s", configCalls, data)
+	}
+}
+
+func TestMainRepoRootUsesOneCommonDirectoryQuery(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "")
+	logPath, _ := installGitWrapper(t, false)
+	t.Setenv("PATH", filepath.Dir(logPath)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, olderGit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("olderGit=%t", olderGit), func(t *testing.T) {
+			if olderGit {
+				t.Setenv("TREEHOUSE_REJECT_PATH_FORMAT", "1")
+			}
+			if err := os.WriteFile(logPath, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got := mainRepoRoot(worktree)
+			gotInfo, err := os.Stat(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantInfo, err := os.Stat(repo)
+			if err != nil || !os.SameFile(gotInfo, wantInfo) {
+				t.Fatalf("main root = %q, want %q: %v", got, repo, err)
+			}
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := strings.Split(strings.TrimSpace(string(data)), "\n")
+			wantCalls := 1
+			if olderGit {
+				wantCalls = 2
+			}
+			if len(calls) != wantCalls || !strings.Contains(calls[0], "--path-format=absolute") {
+				t.Fatalf("common-directory discovery = %q, want absolute query first and %d calls", data, wantCalls)
+			}
+			if olderGit && strings.Contains(calls[1], "--path-format=absolute") {
+				t.Fatalf("older Git did not fall back to the relative query: %s", data)
+			}
+		})
 	}
 }
 

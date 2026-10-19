@@ -60,10 +60,13 @@ func GetDefaultBranch(repoRoot string) (string, error) {
 
 func mainRepoRoot(repoRoot string) string {
 	mainRoot := repoRoot
-	if dir, err := runGit(repoRoot, "rev-parse", "--git-common-dir"); err == nil {
-		if d, err2 := runGit(repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"); err2 == nil {
-			dir = d
-		}
+	// Ask for the absolute path first: modern Git needs only one process.
+	// Keep the existing relative-path query for Git without --path-format.
+	dir, err := runGit(repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		dir, err = runGit(repoRoot, "rev-parse", "--git-common-dir")
+	}
+	if err == nil {
 		if root, ok := repoRootFromCommonGitDir(dir); ok {
 			mainRoot = root
 		}

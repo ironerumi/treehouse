@@ -663,61 +663,72 @@ func TestAcquire_PersonalLayersRefreshAndInventoryCleanup(t *testing.T) {
 
 func TestAcquire_PersistentLayerReadErrorsRemoveOrQuarantine(t *testing.T) {
 	for _, reused := range []bool{false, true} {
-		for _, layer := range []string{"user", "clone"} {
-			t.Run(fmt.Sprintf("%s/reused=%t", layer, reused), func(t *testing.T) {
-				isolateSeedConfig(t)
-				repo, poolDir := setupLocalRepo(t)
-				path := ""
-				if reused {
-					var err error
-					path, err = Acquire(repo, poolDir, 1, nil)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if err := Release(poolDir, path); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if layer == "user" {
-					runGit(t, repo, "config", "worktree.includeFile", "missing.include")
-				} else {
-					common, err := gitvcs.CommonGitDir(repo)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if err := os.Mkdir(filepath.Join(common, "info", "worktreeinclude"), 0o755); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if _, err := Acquire(repo, poolDir, 1, nil); err == nil {
-					t.Fatal("unreadable persistent layer must fail acquisition")
-				}
-				state, err := ReadState(poolDir)
+		t.Run(fmt.Sprintf("reused=%t", reused), func(t *testing.T) {
+			isolateSeedConfig(t)
+			repo, poolDir := setupLocalRepo(t)
+			path := ""
+			if reused {
+				var err error
+				path, err = Acquire(repo, poolDir, 1, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !reused {
-					if len(state.Worktrees) != 0 {
-						t.Fatalf("fresh failed slot was not removed: %#v", state.Worktrees)
-					}
-					out := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain")
-					listed, err := out.Output()
-					if err != nil || strings.Count(string(listed), "worktree ") != 1 {
-						t.Fatalf("fresh failure left registered worktree: %s, %v", listed, err)
-					}
-					return
-				}
-				if len(state.Worktrees) != 1 || !state.Worktrees[0].Leased || state.Worktrees[0].Path != path {
-					t.Fatalf("reused failed slot not quarantined: %#v", state.Worktrees)
-				}
-				if _, err := Acquire(repo, poolDir, 1, nil); err == nil {
-					t.Fatal("failed-seeding quarantine was reused")
-				}
 				if err := Release(poolDir, path); err != nil {
-					t.Fatalf("named return should not reread bad layers: %v", err)
+					t.Fatal(err)
 				}
-			})
-		}
+			}
+			// Each failure returns the fixture to its original available state;
+			// share repository setup and the initial acquisition across layers.
+			for _, layer := range []string{"user", "clone"} {
+				t.Run(layer, func(t *testing.T) {
+					if layer == "user" {
+						runGit(t, repo, "config", "worktree.includeFile", "missing.include")
+						t.Cleanup(func() { runGit(t, repo, "config", "--unset", "worktree.includeFile") })
+					} else {
+						common, err := gitvcs.CommonGitDir(repo)
+						if err != nil {
+							t.Fatal(err)
+						}
+						sidecar := filepath.Join(common, "info", "worktreeinclude")
+						if err := os.Mkdir(sidecar, 0o755); err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(func() {
+							if err := os.Remove(sidecar); err != nil {
+								t.Fatal(err)
+							}
+						})
+					}
+					if _, err := Acquire(repo, poolDir, 1, nil); err == nil {
+						t.Fatal("unreadable persistent layer must fail acquisition")
+					}
+					state, err := ReadState(poolDir)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !reused {
+						if len(state.Worktrees) != 0 {
+							t.Fatalf("fresh failed slot was not removed: %#v", state.Worktrees)
+						}
+						out := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain")
+						listed, err := out.Output()
+						if err != nil || strings.Count(string(listed), "worktree ") != 1 {
+							t.Fatalf("fresh failure left registered worktree: %s, %v", listed, err)
+						}
+						return
+					}
+					if len(state.Worktrees) != 1 || !state.Worktrees[0].Leased || state.Worktrees[0].Path != path {
+						t.Fatalf("reused failed slot not quarantined: %#v", state.Worktrees)
+					}
+					if _, err := Acquire(repo, poolDir, 1, nil); err == nil {
+						t.Fatal("failed-seeding quarantine was reused")
+					}
+					if err := Release(poolDir, path); err != nil {
+						t.Fatalf("named return should not reread bad layers: %v", err)
+					}
+				})
+			}
+		})
 	}
 }
 
