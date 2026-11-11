@@ -94,6 +94,38 @@ func TestSeedLayersReusesKnownCommonDirectory(t *testing.T) {
 	}
 }
 
+func TestGitWrapperDelegatesWithOriginalPath(t *testing.T) {
+	// PATH-dispatching Git shims must not rediscover our instrumentation
+	// wrapper. Observe the environment delivered to the captured executable.
+	root := t.TempDir()
+	source := filepath.Join(root, "main.go")
+	if err := os.WriteFile(source, []byte(`package main
+import ("fmt"; "os")
+func main() { fmt.Print(os.Getenv("PATH")) }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	name := "git"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	build := exec.Command("go", "build", "-o", filepath.Join(root, name), source)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build environment probe: %v\n%s", err, out)
+	}
+	originalPath := root + string(os.PathListSeparator) + os.Getenv("PATH")
+	t.Setenv("PATH", originalPath)
+	_, wrapper := installGitWrapper(t, false)
+	t.Setenv("PATH", filepath.Dir(wrapper)+string(os.PathListSeparator)+originalPath)
+	out, err := exec.Command("git").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != originalPath {
+		t.Fatalf("delegated PATH = %q, want pre-wrapper PATH %q", out, originalPath)
+	}
+}
+
 func TestMainRepoRootUsesOneCommonDirectoryQuery(t *testing.T) {
 	repo, worktree := setupSeedWorktree(t, "")
 	logPath, _ := installGitWrapper(t, false)
@@ -2037,6 +2069,8 @@ func main() {
     }
   }
   cmd := exec.Command(os.Getenv("TREEHOUSE_REAL_GIT"), args...)
+  // A captured PATH-dispatching shim must not find this wrapper again.
+  cmd.Env = append(os.Environ(), "PATH="+os.Getenv("TREEHOUSE_GIT_PATH"))
   cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
   if err := cmd.Run(); err != nil {
     if exit, ok := err.(*exec.ExitError); ok { os.Exit(exit.ExitCode()) }
@@ -2058,6 +2092,7 @@ func main() {
 	}
 	logPath := filepath.Join(root, "git.log")
 	t.Setenv("TREEHOUSE_REAL_GIT", realGit)
+	t.Setenv("TREEHOUSE_GIT_PATH", os.Getenv("PATH"))
 	t.Setenv("TREEHOUSE_GIT_LOG", logPath)
 	if rejectPathFormat {
 		t.Setenv("TREEHOUSE_REJECT_PATH_FORMAT", "1")
