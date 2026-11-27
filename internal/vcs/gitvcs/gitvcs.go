@@ -483,15 +483,15 @@ func seedWorktreeWithInventory(repoRoot, worktreePath string, gitEnv []string, t
 		}
 
 		var data []byte
+		var target string
+		symlink := info.Mode()&os.ModeSymlink != 0
 		mode := info.Mode().Perm()
 		switch {
 		case info.Mode().IsRegular():
 			data, err = sourceRoot.ReadFile(rel)
-		case info.Mode()&os.ModeSymlink != 0:
-			var target string
+		case symlink:
+			// The link is recreated with its target text, never followed.
 			target, err = sourceRoot.Readlink(rel)
-			data = []byte(target)
-			mode = 0o666
 		default:
 			continue
 		}
@@ -503,6 +503,13 @@ func seedWorktreeWithInventory(repoRoot, worktreePath string, gitEnv []string, t
 		// machinery, which can execute repository-configured content filters.
 		if err := ensureRootedDir(destinationRoot, filepath.Dir(rel)); err != nil {
 			return failed(err)
+		}
+		if symlink {
+			if err := destinationRoot.Symlink(target, rel); err != nil {
+				return failed(err)
+			}
+			copied = append(copied, filepath.ToSlash(rel))
+			continue
 		}
 		dst, err := destinationRoot.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 		if err != nil {
