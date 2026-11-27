@@ -899,8 +899,8 @@ func TestSeedWorktreeDoesNotCopyManifestSelectedUnignoredFile(t *testing.T) {
 	}
 }
 
-func TestSeedWorktreeFlattensSourceSymlink(t *testing.T) {
-	repo, worktree := setupSeedWorktree(t, "linked.env\n")
+func TestSeedWorktreeRecreatesSourceSymlink(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "linked.env\nplain.env\n")
 	outside := filepath.Join(t.TempDir(), "secret")
 	if err := os.WriteFile(outside, []byte("secret contents\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -908,17 +908,62 @@ func TestSeedWorktreeFlattensSourceSymlink(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(repo, "linked.env")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
+	writeTestFile(t, repo, "plain.env", "plain\n")
 
-	if err := SeedWorktree(repo, worktree, nil); err != nil {
+	seeded, err := SeedWorktreeWithInventory(repo, worktree, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	seeded := filepath.Join(worktree, "linked.env")
-	if info, err := os.Lstat(seeded); err != nil {
-		t.Fatal(err)
-	} else if info.Mode()&os.ModeSymlink != 0 {
-		t.Fatal("source symlink was recreated in the worktree")
+	if got, want := strings.Join(seeded, ","), "linked.env,plain.env"; got != want {
+		t.Fatalf("seeded = %q, want %q", got, want)
 	}
-	assertTestFile(t, worktree, "linked.env", outside)
+	link := filepath.Join(worktree, "linked.env")
+	if info, err := os.Lstat(link); err != nil {
+		t.Fatal(err)
+	} else if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("source symlink was seeded as %v, want a symlink", info.Mode())
+	}
+	if target, err := os.Readlink(link); err != nil {
+		t.Fatal(err)
+	} else if target != outside {
+		t.Fatalf("seeded symlink target = %q, want %q", target, outside)
+	}
+	if info, err := os.Lstat(filepath.Join(worktree, "plain.env")); err != nil {
+		t.Fatal(err)
+	} else if !info.Mode().IsRegular() {
+		t.Fatalf("regular file was seeded as %v", info.Mode())
+	}
+	assertTestFile(t, worktree, "plain.env", "plain\n")
+}
+
+func TestSeedWorktreeCleanupRemovesSeededSymlinkAfterFailure(t *testing.T) {
+	repo, worktree := setupSeedWorktree(t, "a.link\nb.env\n")
+	outside := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(outside, []byte("target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repo, "a.link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	writeTestFile(t, repo, "b.env", "source\n")
+	// An existing destination makes the exclusive create of b.env fail after a.link exists.
+	writeTestFile(t, worktree, "b.env", "existing\n")
+
+	seeded, err := SeedWorktreeWithInventory(repo, worktree, nil)
+	if err == nil {
+		t.Fatal("expected seeding to fail on the existing destination")
+	}
+	if got := strings.Join(seeded, ","); got != "a.link" {
+		t.Fatalf("seeded before failure = %q, want a.link", got)
+	}
+	if err := RemoveSeededPaths(worktree, seeded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(worktree, "a.link")); !os.IsNotExist(err) {
+		t.Fatalf("seeded symlink survived cleanup: %v", err)
+	}
+	assertTestFile(t, filepath.Dir(outside), "target", "target\n")
+	assertTestFile(t, worktree, "b.env", "existing\n")
 }
 
 func TestSeedWorktreePreservesPrivatePermissions(t *testing.T) {
